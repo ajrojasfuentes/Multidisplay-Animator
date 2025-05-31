@@ -1,14 +1,17 @@
 /* =========================================================================
  * @file    mypthread.c
- * @brief   Implementación en espacio de usuario de una API mínima tipo
- *          Pthreads con planificador Round‑Robin preemptivo (fase 1).
- *
- *          Fases futuras añadirán Lottery y Tiempo Real.
+ * @brief   Reimplementación completa  en el espacio de usuario de una API mínima tipo Pthreads con
+ *          soporte simultáneo de tres planificadores: Round‑Robin, Lottery
+ *          y Tiempo Real (EDF). Este módulo concentra el cambio de contexto
+ *          y delega la política de selección a los módulos scheduler_*.c
  *
  * @author  Valery Carvajal y Anthony Rojas
- * @date    29 may 2025
+ * @date    30 may 2025
  * ========================================================================= */
+#define _POSIX_C_SOURCE 200112L
+
 #include "mypthread.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,248 +19,116 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <time.h>
+#include <stdatomic.h>
 
-/* ============================= Constantes =============================== */
-#define MAX_THREADS         1024          /* límite arbitrario */
-#define QUANTUM_USEC        10000         /* 10 ms */
+/* ------------------- Prototipos de los schedulers ---------------------- */
+void rr_init(void);      void rr_add(my_thread_t*);      my_thread_t* rr_pick_next(void);      void rr_yield_current(my_thread_t*);
+void lottery_init(void); void lottery_add(my_thread_t*); my_thread_t* lottery_pick_next(void); void lottery_yield_current(my_thread_t*);
+void rt_init(void);      void rt_add(my_thread_t*);      my_thread_t* rt_pick_next(void);      void rt_yield_current(my_thread_t*);
 
-/* ========================= Estructuras internas ========================= */
-static my_thread_t       *g_threads[MAX_THREADS];  /* tabla global de TCB */
-static uint32_t           g_next_id = 0;
-static my_thread_t       *g_current = NULL;        /* hilo en CPU */
+/* ===================== Prototipo adelantado ============================ */
+static void thread_trampoline(void *(*start)(void *), void *arg);
 
-/* Cola simple enlazada para RR */
-static my_thread_t *g_ready_head = NULL;
-static my_thread_t *g_ready_tail = NULL;
+/* ========================= Configuración global ======================== */
+#define MAX_THREADS  1024
+#define QUANTUM_USEC 10000
 
-/* Forward ‑ prototypes internos */
-static void scheduler_init(void);
-static void enqueue_ready(my_thread_t *t);
-static my_thread_t *dequeue_ready(void);
-static void dispatch(int sig);
-static void thread_trampoline(void *(*start_routine)(void *), void *arg);
+static my_thread_t *g_threads[MAX_THREADS] = {0};
+static uint32_t     g_next_id = 0;
+static my_thread_t *g_current = NULL;
 
-/* ========================= Utilidades atómicas ========================== */
-static inline int xchg(volatile int *ptr, int val)
-{
-    return __sync_lock_test_and_set(ptr, val);
-}
-
-/* ========================= Inicialización global ======================== */
-__attribute__((constructor))
-static void runtime_bootstrap(void)
-{
-    /* Crear TCB para el hilo principal */
-    my_thread_t *main_t = calloc(1, sizeof(*main_t));
-    if (!main_t) { perror("calloc"); exit(EXIT_FAILURE); }
-    main_t->id    = g_next_id++;
-    main_t->state = T_RUNNING;
-    main_t->sched = SCHED_RR;
-    g_current     = main_t;
-    g_threads[main_t->id] = main_t;
-
-    /* Configurar SIGALRM para RR */
-    scheduler_init();
-}
-
-static void scheduler_init(void)
-{
-    struct sigaction sa = {0};
-    sa.sa_handler = dispatch;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags   = SA_NODEFER;
-    if (sigaction(SIGALRM, &sa, NULL) != 0) {
-        perror("sigaction"); exit(EXIT_FAILURE);
-    }
-
-    struct itimerval tv;
-    tv.it_interval.tv_sec  = 0;
-    tv.it_interval.tv_usec = QUANTUM_USEC;
-    tv.it_value = tv.it_interval; /* arranca de inmediato */
-    if (setitimer(ITIMER_REAL, &tv, NULL) != 0) {
-        perror("setitimer"); exit(EXIT_FAILURE);
+/* ===================== Utilidades de planificación ===================== */
+static inline void schedule_add(my_thread_t* t){
+    switch(t->sched){
+        case SCHED_RR: rr_add(t); break;
+        case SCHED_LOTTERY: lottery_add(t); break;
+        case SCHED_RT: rt_add(t); break;
     }
 }
-
-/* ====================== Funciones de colas READY ======================= */
-static void enqueue_ready(my_thread_t *t)
-{
-    t->next = NULL;
-    if (!g_ready_head) {
-        g_ready_head = g_ready_tail = t;
-    } else {
-        g_ready_tail->next = t;
-        g_ready_tail = t;
+static inline void schedule_yield_current(my_thread_t* t){
+    switch(t->sched){
+        case SCHED_RR: rr_yield_current(t); break;
+        case SCHED_LOTTERY: lottery_yield_current(t); break;
+        case SCHED_RT: rt_yield_current(t); break;
     }
 }
-
-static my_thread_t *dequeue_ready(void)
-{
-    my_thread_t *t = g_ready_head;
-    if (t) {
-        g_ready_head = t->next;
-        if (!g_ready_head) g_ready_tail = NULL;
-    }
-    return t;
+static my_thread_t* schedule_next(void){
+    my_thread_t* n = rt_pick_next(); if(n) return n;
+    n = lottery_pick_next(); if(n) return n;
+    return rr_pick_next();
 }
 
-/* ========================= Cambio de contexto =========================== */
-static void switch_to(my_thread_t *next)
-{
-    my_thread_t *prev = g_current;
+/* ======================== Dispatcher y temporizador ==================== */
+static void context_switch(my_thread_t* next){
+    my_thread_t* prev = g_current;
     g_current = next;
     next->state = T_RUNNING;
-    if (swapcontext(&prev->ctx, &next->ctx) == -1) {
-        perror("swapcontext"); exit(EXIT_FAILURE);
-    }
+    if(swapcontext(&prev->ctx,&next->ctx)==-1){perror("swapcontext");exit(EXIT_FAILURE);} }
+
+static void sig_dispatcher(int sig){ (void)sig;
+    my_thread_t* prev = g_current;
+    if(prev->state==T_RUNNING){ prev->state = T_READY; schedule_yield_current(prev);}
+    my_thread_t* next = schedule_next();
+    if(!next){ prev->state = T_RUNNING; return; }
+    context_switch(next);
 }
+static void timer_init(void){
+    struct sigaction sa; memset(&sa,0,sizeof(sa));
+    sa.sa_handler = sig_dispatcher; sigemptyset(&sa.sa_mask);
+    if(sigaction(SIGALRM,&sa,NULL)!=0){perror("sigaction");exit(EXIT_FAILURE);}
+    struct itimerval tv; tv.it_interval.tv_sec=0; tv.it_interval.tv_usec=QUANTUM_USEC; tv.it_value=tv.it_interval;
+    if(setitimer(ITIMER_REAL,&tv,NULL)!=0){perror("setitimer");exit(EXIT_FAILURE);} }
 
-/* ============================ Dispatcher ================================ */
-static void dispatch(int sig)
-{
-    (void)sig;
+/* ===================== Inicialización del runtime ====================== */
+__attribute__((constructor))
+static void runtime_bootstrap(void){
+    srand((unsigned)time(NULL));
+    my_thread_t* main_t = calloc(1,sizeof(*main_t)); if(!main_t){perror("calloc");exit(EXIT_FAILURE);}
+    main_t->id = g_next_id++; main_t->state=T_RUNNING; main_t->sched=SCHED_RR; g_current=main_t; g_threads[main_t->id]=main_t;
+    rr_init(); lottery_init(); rt_init();
+    timer_init(); }
 
-    /* No cambiar si solo hay un hilo */
-    if (!g_ready_head) return;
+/* ============================== API ==================================== */
+static inline int atomic_xchg(volatile int* ptr,int val){return __sync_lock_test_and_set(ptr,val);}
 
-    my_thread_t *prev = g_current;
+int my_thread_create(my_thread_t* thread_out,const void* attr_unused,void*(*start_routine)(void*),void* arg,sched_type_t sched){ (void)attr_unused;
+    if(g_next_id>=MAX_THREADS) return EAGAIN;
+    my_thread_t* t = calloc(1,sizeof(*t)); if(!t) return ENOMEM;
+    t->id=g_next_id++; t->state=T_READY; t->sched=sched; if(sched==SCHED_LOTTERY) t->tickets=1;
+    size_t stack_sz=MYTHREAD_DEFAULT_STACK; void* stack=NULL; if(posix_memalign(&stack,16,stack_sz)!=0){free(t);return ENOMEM;}
+    if(getcontext(&t->ctx)==-1){free(stack);free(t);return errno;} t->ctx.uc_stack.ss_sp=stack; t->ctx.uc_stack.ss_size=stack_sz; t->ctx.uc_link=NULL; t->stack_base=stack;
+    makecontext(&t->ctx,(void(*)(void))thread_trampoline,2,start_routine,arg);
+    g_threads[t->id]=t; schedule_add(t); if(thread_out) *thread_out=*t; return 0; }
 
-    if (prev->state == T_RUNNING) {
-        prev->state = T_READY;
-        enqueue_ready(prev);
-    }
+static void thread_trampoline(void *(*start)(void *), void *arg){ void* ret=start(arg); my_thread_exit(ret);}
 
-    my_thread_t *next = dequeue_ready();
-    if (!next) return; /* nada disponible */
+void my_thread_exit(void* retval){
+    g_current->retval = retval; g_current->state = T_ZOMBIE;
+    my_thread_t* next = schedule_next(); if(!next) exit(0);
+    context_switch(next); __builtin_unreachable(); }
 
-    switch_to(next);
-}
+int my_thread_join(my_thread_t* thread, void** retval){
+    if(thread==g_current) return EDEADLK;
+    while(thread->state!=T_ZOMBIE) my_thread_yield();
+    if(retval) *retval = thread->retval;
+    free(thread->stack_base); free(thread); return 0; }
 
-/* ========================== Trampolín de hilos ========================== */
-static void thread_trampoline(void *(*start_routine)(void *), void *arg)
-{
-    void *ret = start_routine(arg);
-    my_thread_exit(ret);
-}
+void my_thread_yield(void){ raise(SIGALRM);}
 
-/* =============================== API =================================== */
-int my_thread_create(my_thread_t *thread,
-                     const void *attr_unused,
-                     void *(*start_routine)(void *),
-                     void *arg,
-                     sched_type_t sched)
-{
-    (void)attr_unused; /* atributos no utilizados en esta versión */
+int my_thread_chsched(sched_type_t new_sched){ g_current->sched=new_sched; return 0; }
 
-    if (g_next_id >= MAX_THREADS) return EAGAIN;
+/* ============================== Mutex =================================== */
+int my_mutex_init(my_mutex_t* m){ m->lock=0; m->owner=NULL; m->recursion=0; return 0; }
 
-    my_thread_t *t = calloc(1, sizeof(*t));
-    if (!t) return ENOMEM;
+int my_mutex_lock(my_mutex_t* m){
+    my_thread_t* self = g_current;
+    if(m->owner==self){ m->recursion++; return 0; }
+    while(atomic_xchg(&m->lock,1)) my_thread_yield();
+    m->owner=self; m->recursion=1; return 0; }
 
-    t->id    = g_next_id++;
-    t->state = T_READY;
-    t->sched = sched;
-    t->tickets = 1; /* default */
+int my_mutex_unlock(my_mutex_t* m){
+    if(m->owner!=g_current) return EPERM;
+    if(--m->recursion==0){ m->owner=NULL; atomic_xchg(&m->lock,0);} return 0; }
 
-    /* Reserva de pila */
-    size_t stack_sz = MYTHREAD_DEFAULT_STACK;
-    void *stack = NULL;
-    if (posix_memalign(&stack, 16, stack_sz) != 0) {
-        free(t); return ENOMEM;
-    }
-
-    /* Contexto */
-    if (getcontext(&t->ctx) == -1) { free(stack); free(t); return errno; }
-    t->ctx.uc_stack.ss_sp   = stack;
-    t->ctx.uc_stack.ss_size = stack_sz;
-    t->ctx.uc_link          = NULL;
-    makecontext(&t->ctx, (void (*)(void))thread_trampoline, 2,
-                start_routine, arg);
-
-    /* Registrar y encolar */
-    g_threads[t->id] = t;
-    enqueue_ready(t);
-
-    if (thread) *thread = *t; /* copiar descriptor externo */
-
-    return 0;
-}
-
-void my_thread_exit(void *retval)
-{
-    g_current->retval = retval;
-    g_current->state  = T_ZOMBIE;
-
-    /* Despertar posibles joiners… (simplificado: busy‑wait en join) */
-
-    /* Pasar control al siguiente listo */
-    my_thread_t *next = dequeue_ready();
-    if (!next) {
-        /* Último hilo → terminar proceso */
-        exit(0);
-    }
-    switch_to(next);
-
-    __builtin_unreachable();
-}
-
-int my_thread_join(my_thread_t *thread, void **retval)
-{
-    while (thread->state != T_ZOMBIE) {
-        /* Yield explícito para evitar busy CPU */
-        my_thread_yield();
-    }
-    if (retval) *retval = thread->retval;
-    return 0;
-}
-
-void my_thread_yield(void)
-{
-    raise(SIGALRM); /* fuerza al dispatcher */
-}
-
-int my_thread_chsched(sched_type_t new_sched)
-{
-    g_current->sched = new_sched;
-    return 0; /* TODO: mover entre colas específicas en fases futuras */
-}
-
-/* ============================ Mutex simple ============================== */
-int my_mutex_init(my_mutex_t *m)
-{
-    m->lock = 0;
-    m->owner = NULL;
-    m->recursion = 0;
-    return 0;
-}
-
-int my_mutex_lock(my_mutex_t *m)
-{
-    my_thread_t *self = g_current;
-    if (m->owner == self) {
-        m->recursion++; return 0; /* recursivo */
-    }
-    while (xchg(&m->lock, 1)) {
-        /* Bloquear hilo: ponerlo en BLOCKED y despachar */
-        self->state = T_BLOCKED;
-        raise(SIGALRM);
-    }
-    m->owner = self;
-    m->recursion = 1;
-    return 0;
-}
-
-int my_mutex_unlock(my_mutex_t *m)
-{
-    if (m->owner != g_current) return EPERM;
-    if (--m->recursion == 0) {
-        m->owner = NULL;
-        xchg(&m->lock, 0);
-    }
-    return 0;
-}
-
-int my_mutex_destroy(my_mutex_t *m)
-{
-    (void)m; return 0; /* nada que liberar */
-}
+int my_mutex_destroy(my_mutex_t* m){ (void)m; return 0; }

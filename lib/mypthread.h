@@ -45,6 +45,7 @@ typedef enum {
 
 /** Descriptor de hilo (equivalente a pthread_t) */
 typedef struct my_thread {
+    void *stack_base;
     uint32_t           id;          /**< Identificador interno */
     ucontext_t         ctx;         /**< Contexto de ejecución */
     void              *retval;      /**< Valor devuelto por el hilo */
