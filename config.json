@@ -1,15 +1,15 @@
 {
-  "num_figures": 1,
+  "num_figures": 2,
   "canvas": {
-    "width": 40,
+    "width": 60,
     "height": 20
   },
   "figures": [
     {
       "t_start": 0,
-      "t_end": 12,
-      "pos0": { "x": 5, "y": 5 },
-      "pos1": { "x": 25, "y": 10 },
+      "t_end": 15,
+      "pos0": { "x": 2, "y": 2 },
+      "pos1": { "x": 30, "y": 10 },
       "rows": 5,
       "cols": 5,
       "rotations": {
@@ -40,6 +40,36 @@
           "x x x",
           " xxx ",
           "  x  "
+        ]
+      }
+    },
+    {
+      "t_start": 5,
+      "t_end": 20,
+      "pos0": { "x": 40, "y": 0 },
+      "pos1": { "x": 10, "y": 15 },
+      "rows": 3,
+      "cols": 7,
+      "rotations": {
+        "0": [
+          "xxAxxB",
+          "x xxx ",
+          "  x   "
+        ],
+        "90": [
+          "  x   ",
+          " xxx  ",
+          "xxBxxA"
+        ],
+        "180": [
+          "  x   ",
+          " xxx  ",
+          "xxAxxB"
+        ],
+        "270": [
+          "xxBxxA",
+          " xxx  ",
+          "  x   "
         ]
       }
     }

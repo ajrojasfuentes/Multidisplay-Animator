@@ -10,7 +10,8 @@ typedef struct {
     int t_start, t_end;
     Position pos0, pos1;
     int rows, cols;
-    char ***rotations;  // rotaciones[ángulo][fila][columna]
+    char ***rotations;      // rotaciones[ángulo][fila][columna]
+    int num_rotations;      // ← AGREGAR ESTA LÍNEA
 } Figure;
 
 typedef struct {
