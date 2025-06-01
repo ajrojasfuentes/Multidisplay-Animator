@@ -1,16 +1,11 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -I/usr/include/cjson
-LDLIBS = -lcjson
+LDFLAGS = -lcjson
 
-OBJS = main.o config_parser.o
+OBJS = main.o config_parser.o animator.o
 
-all: test_config
-
-test_config: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
-
-main.o: main.c config_parser.h anim_config.h
-config_parser.o: config_parser.c config_parser.h anim_config.h
+test_anim: $(OBJS)
+	$(CC) -o test_anim $(OBJS) $(LDFLAGS)
 
 clean:
-	rm -f *.o test_config
+	rm -f *.o test_anim
