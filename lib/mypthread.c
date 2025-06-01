@@ -193,13 +193,13 @@ static void timer_init(void) {
 }
 
 /* ======================== Trampolín de hilos ========================== */
-/* Prototipo adelantado para makecontext */
-static void thread_trampoline(void (*start_routine)(void *), void *arg);
+/* Prototipo adelantado para makecontext, con firma CORRECTA */
+static void thread_trampoline(void *(*start_routine)(void *), void *arg);
 
-static void thread_trampoline(void (*start_routine)(void *), void *arg) {
+static void thread_trampoline(void *(*start_routine)(void *), void *arg) {
     void *ret = NULL;
-    /* Llamar a la función de usuario */
-    ret = ((void *(*)(void *))start_routine)(arg);
+    /* Llamar a la función de usuario con firma correcta */
+    ret = start_routine(arg);
     my_thread_exit(ret);
 }
 
