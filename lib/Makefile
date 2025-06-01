@@ -7,13 +7,13 @@ SRCS_LIB := queues.c scheduler_rr.c scheduler_lottery.c scheduler_rt.c mypthread
 OBJS_LIB := $(SRCS_LIB:.c=.o)
 LIB      := libmypthread.a
 
-# Programa de prueba
-SRC_TEST := test.c
-EXE      := test_prog
+# Ejecutables de prueba
+EXE_PTHREAD      := pthread_test
+EXE_MYPTHREAD    := mypthread_test
 
-all: $(LIB) $(EXE)
+all: $(LIB) $(EXE_PTHREAD) $(EXE_MYPTHREAD)
 
-# Regla para crear la biblioteca estática
+# Crear la biblioteca estática libmypthread.a
 $(LIB): $(OBJS_LIB)
 	$(AR) $@ $^
 
@@ -21,12 +21,16 @@ $(LIB): $(OBJS_LIB)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Compilar y enlazar el programa de prueba
-$(EXE): $(SRC_TEST) $(LIB)
-	$(CC) $(CFLAGS) $(SRC_TEST) -L. -lmypthread -lpthread -o $@
+# Compilar pthread_test
+$(EXE_PTHREAD): pthread_test.c
+	$(CC) $(CFLAGS) pthread_test.c -pthread -o $@
 
-# Limpiar objetos y ejecutables
+# Compilar mypthread_test (necesita libmypthread.a)
+$(EXE_MYPTHREAD): mypthread_test.c $(LIB)
+	$(CC) $(CFLAGS) mypthread_test.c -L. -lmypthread -o $@
+
+# Limpiar archivos intermedios y ejecutables
 clean:
-	rm -f $(OBJS_LIB) $(LIB) $(EXE)
+	rm -f $(OBJS_LIB) $(LIB) $(EXE_PTHREAD) $(EXE_MYPTHREAD)
 
 .PHONY: all clean

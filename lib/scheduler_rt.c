@@ -105,6 +105,7 @@ my_thread_t *rt_pick_next(void) {
     my_thread_t *t = heap[0];
     heap_sz--;
     if (heap_sz > 0) {
+        /* CORRECCIÓN: usar heap[heap_sz] (que ahora es el último válido) */
         heap[0] = heap[heap_sz];
         heapify_down(0);
     }

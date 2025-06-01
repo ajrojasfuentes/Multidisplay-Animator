@@ -104,9 +104,7 @@ static pthread_mutex_t pt_mutex;
 
 /* Función que cada hilo pthread ejecuta para incrementar contador */
 static void *pt_increment_fn(void *arg) {
-    int idx = *(int *)arg;
-    free(arg);
-
+    (void)arg;  /* idx no se usa aquí, sólo incrementamos */
     for (int i = 0; i < INCREMENTS_PER_T; i++) {
         pthread_mutex_lock(&pt_mutex);
         pt_count++;
@@ -129,7 +127,7 @@ static void test_pthread_counter(void) {
             perror("malloc");
             exit(EXIT_FAILURE);
         }
-        *arg = i;
+        *arg = i;  /* aunque no se use idx en la función */
         int err = pthread_create(&threads[i], NULL, pt_increment_fn, arg);
         if (err != 0) {
             fprintf(stderr, "pthread_create error: %d\n", err);
@@ -161,7 +159,7 @@ int main(void) {
     /* 1) Prueba de contador protegido con mutex en mypthread */
     test_mypthread_counter();
 
-    /* Agregar pequeña pausa */
+    /* Pequeña pausa */
     usleep(100000);
 
     /* 2) Prueba análoga con la biblioteca estándar pthreads */

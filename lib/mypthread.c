@@ -226,7 +226,17 @@ static void runtime_bootstrap(void) {
         perror("calloc");
         exit(EXIT_FAILURE);
     }
-    main_t->id         = g_next_id++;
+
+    /* ======== CORRECCIÓN: Asignar ID dentro de la sección crítica ======== */
+    block_timer_signal();
+    if (g_next_id >= MAX_THREADS) {
+        unblock_timer_signal();
+        fprintf(stderr, "No hay IDs disponibles para hilo principal\n");
+        exit(EXIT_FAILURE);
+    }
+    main_t->id = g_next_id++;
+    unblock_timer_signal();
+
     main_t->state      = T_RUNNING;
     main_t->sched      = SCHED_RR;  /* Por defecto RR */
     main_t->tickets    = 0;
@@ -282,11 +292,13 @@ int my_thread_create(my_thread_t *thread_out,
                      sched_type_t sched) {
     (void)attr_unused;
 
+    /* ======== CORRECCIÓN: Asignar ID dentro de la sección crítica ======== */
     block_timer_signal();
     if (g_next_id >= MAX_THREADS) {
         unblock_timer_signal();
         return EAGAIN;
     }
+    uint32_t new_id = g_next_id++;
     unblock_timer_signal();
 
     /* Reservar TCB dinámico */
@@ -295,7 +307,7 @@ int my_thread_create(my_thread_t *thread_out,
         return ENOMEM;
     }
     /* Asignar campos básicos */
-    t->id       = g_next_id++;
+    t->id       = new_id;
     t->state    = T_READY;
     /* Validar `sched`; si no es uno de los tres, dejamos RR */
     if (sched == SCHED_LOTTERY || sched == SCHED_RT) {
@@ -304,7 +316,7 @@ int my_thread_create(my_thread_t *thread_out,
         t->sched = SCHED_RR;
     }
     t->tickets    = (t->sched == SCHED_LOTTERY) ? 1 : 0;
-    t->deadline   = 0;
+    t->deadline   = 0;  /* si luego cambia a SCHED_RT, se asigna deadline válido */
     t->next       = NULL;
 
     /* Reserva de pila alineada */
@@ -428,10 +440,12 @@ void my_thread_yield(void) {
 /**
  * Cambia la política de scheduling del hilo actual.
  * Debe extraerlo de su cola anterior y re-encolarlo en la nueva.
+ * Si pasa a SCHED_RT, asignamos un deadline = tiempo actual + 100 ms.
  */
 int my_thread_chsched(sched_type_t new_sched) {
     block_timer_signal();
     my_thread_t *self = g_current;
+
     /* Quitarlo de la cola actual */
     switch (self->sched) {
         case SCHED_RR:
@@ -447,13 +461,23 @@ int my_thread_chsched(sched_type_t new_sched) {
             rr_remove(self);
             break;
     }
+
     /* Asignar nueva política (o RR si `new_sched` no coincide) */
     if (new_sched == SCHED_LOTTERY || new_sched == SCHED_RT) {
         self->sched = new_sched;
     } else {
         self->sched = SCHED_RR;
     }
-    /* Re-encolar en la nueva política */
+
+    /* Si es RT, dar un deadline = ahora + 100 ms */
+    if (self->sched == SCHED_RT) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        uint64_t now_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+        self->deadline = now_us + 100000;  /* ej. 100 ms a futuro */
+    }
+
+    /* Re-encolar en el scheduler correspondiente */
     schedule_add(self);
     unblock_timer_signal();
     return 0;
