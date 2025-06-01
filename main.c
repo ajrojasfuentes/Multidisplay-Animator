@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "config_parser.h"
-#include "animator.h"
+#include "animator_mt.h"
 
 // Si luego usás mypthreads, incluí: #include "mypthread.h"
 
@@ -22,7 +22,7 @@ int main() {
     printf("Canvas: %d x %d\n", config->canvas.width, config->canvas.height);
     printf("Figuras: %d\n", config->num_figures);
 
-    simulate_animation(config);
+    simulate_animation_multithread(config);
 
     free_config(config);
     return 0;

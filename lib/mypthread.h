@@ -24,6 +24,7 @@ typedef struct my_thread {
     struct my_thread *rr_next, *rr_prev;
     struct my_thread *lottery_next, *lottery_prev;
     struct my_thread *rt_next, *rt_prev;
+    void *arg;
 } my_thread_t;
 
 /* Variables globales (definidas en mypthread.c) */
