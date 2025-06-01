@@ -1,21 +1,16 @@
-# Nombre del ejecutable
-TARGET = test
-
-# Archivos fuente
-SRC = main.c mypthread.c
-
-# Flags de compilación
-CFLAGS = -Wall -Wextra -std=c99
-
-# Compilador
 CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -I/usr/include/cjson
+LDLIBS = -lcjson
 
-# Regla por defecto
-all: $(TARGET)
+OBJS = main.o config_parser.o
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC)
+all: test_config
 
-# Limpiar binarios y archivos objeto
+test_config: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
+
+main.o: main.c config_parser.h anim_config.h
+config_parser.o: config_parser.c config_parser.h anim_config.h
+
 clean:
-	rm -f $(TARGET)
+	rm -f *.o test_config

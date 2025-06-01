@@ -1,0 +1,33 @@
+{
+  "num_figures": 1,
+  "canvas": {
+    "width": 75,
+    "height": 50
+  },
+  "figures": [
+    {
+      "t_start": 0,
+      "t_end": 10,
+      "pos0": { "x": 1, "y": 1 },
+      "pos1": { "x": 10, "y": 10 },
+      "rows": 5,
+      "cols": 7,
+      "rotations": {
+        "0": [
+          "   x   ",
+          "   x   ",
+          "xxxAxxx",
+          "   x   ",
+          "   x   "
+        ],
+        "90": [
+          "   x   ",
+          "   x   ",
+          "xxxBxxx",
+          "   x   ",
+          "   x   "
+        ]
+      }
+    }
+  ]
+}
