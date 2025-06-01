@@ -1,41 +1,39 @@
-/* =========================================================================
- * @file    queues.c
- * @brief   Utilidades de colas simples para mypthreads.
- *          Implementa cola FIFO basada en el campo `next` del TCB.
- * ========================================================================= */
-#include "mypthread.h"
-#include <stdbool.h>
+#include "queues.h"
+#include "mypthread.h"  /* para saber qué es my_thread_t */
+#include <stdlib.h>     /* para NULL */
 
-/* -------------------------------------------------------------------------
- * Estructura de cola – declarada aquí para evitar header extra; los módulos
- * que la usen simplemente hacen `extern`.
- * ------------------------------------------------------------------------- */
-typedef struct my_queue {
-    my_thread_t *head;
-    my_thread_t *tail;
-} my_queue_t;
+/* Bloquea SIGALRM (temporizador) */
+static void block_timer_signal(void) {
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGALRM);
+    sigprocmask(SIG_BLOCK, &mask, NULL);
+}
 
-/* -------------------------------------------------------------------------
- * queue_init – deja la cola vacía.
- * ------------------------------------------------------------------------- */
-void queue_init(my_queue_t *q)
-{
+/* Desbloquea SIGALRM */
+static void unblock_timer_signal(void) {
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGALRM);
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
+}
+
+void queue_init(my_queue_t *q) {
     q->head = q->tail = NULL;
 }
 
-/* -------------------------------------------------------------------------
- * queue_is_empty – ¿cola vacía?
- * ------------------------------------------------------------------------- */
-bool queue_is_empty(const my_queue_t *q)
-{
-    return q->head == NULL;
+bool queue_is_empty(const my_queue_t *q) {
+    return (q->head == NULL);
 }
 
-/* -------------------------------------------------------------------------
- * queue_push – inserta hilo al final (FIFO).
- * ------------------------------------------------------------------------- */
-void queue_push(my_queue_t *q, my_thread_t *t)
-{
+void queue_push(my_queue_t *q, my_thread_t *t) {
+    if (!q || !t) return;
+
+    block_timer_signal();
+    /* Si `t` ya está en la cola, lo quitamos antes */
+    queue_remove(q, t);
+
+    /* Insertar al final */
     t->next = NULL;
     if (!q->head) {
         q->head = q->tail = t;
@@ -43,35 +41,51 @@ void queue_push(my_queue_t *q, my_thread_t *t)
         q->tail->next = t;
         q->tail = t;
     }
+    unblock_timer_signal();
 }
 
-/* -------------------------------------------------------------------------
- * queue_pop – extrae y devuelve el primer hilo o NULL.
- * ------------------------------------------------------------------------- */
-my_thread_t *queue_pop(my_queue_t *q)
-{
+my_thread_t *queue_pop(my_queue_t *q) {
+    if (!q) return NULL;
+
+    block_timer_signal();
     my_thread_t *t = q->head;
     if (t) {
         q->head = t->next;
-        if (!q->head) q->tail = NULL;
+        if (!q->head) {
+            q->tail = NULL;
+        }
+        t->next = NULL;
     }
+    unblock_timer_signal();
     return t;
 }
 
-/* -------------------------------------------------------------------------
- * queue_remove – elimina un elemento intermedio. O(n).
- * ------------------------------------------------------------------------- */
-void queue_remove(my_queue_t *q, my_thread_t *t)
-{
-    if (!q->head || !t) return;
+void queue_remove(my_queue_t *q, my_thread_t *t) {
+    if (!q || !t || !q->head) return;
+
+    block_timer_signal();
+    /* Si `t` es la cabeza */
     if (q->head == t) {
-        queue_pop(q);
+        q->head = t->next;
+        if (!q->head) {
+            q->tail = NULL;
+        }
+        t->next = NULL;
+        unblock_timer_signal();
         return;
     }
+
+    /* Buscar en la lista */
     my_thread_t *prev = q->head;
-    while (prev->next && prev->next != t) prev = prev->next;
+    while (prev->next && prev->next != t) {
+        prev = prev->next;
+    }
     if (prev->next == t) {
         prev->next = t->next;
-        if (q->tail == t) q->tail = prev;
+        if (q->tail == t) {
+            q->tail = prev;
+        }
+        t->next = NULL;
     }
+    unblock_timer_signal();
 }
