@@ -1,3 +1,4 @@
+// config_parser.c
 #include "config_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,7 @@ static char **parse_rotation_array(cJSON *array, int rows, int cols) {
         const char *line = row->valuestring;
         matrix[i] = malloc(sizeof(char) * (cols + 1));
         strncpy(matrix[i], line, cols);
-        matrix[i][cols] = '\0';  // Asegurar terminación nula
+        matrix[i][cols] = '\0';  // Asegura terminación nula
     }
     return matrix;
 }
@@ -73,15 +74,21 @@ AnimationConfig *load_config(const char *filename) {
         f->cols = cJSON_GetObjectItem(fig, "cols")->valueint;
 
         cJSON *rot = cJSON_GetObjectItem(fig, "rotations");
-        int num_rotations = cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(rot, "0")) > 0 ? 2 : 1;
         f->rotations = malloc(sizeof(char **) * 360);
         for (int j = 0; j < 360; j++) f->rotations[j] = NULL;
 
+        // Cargar rotaciones disponibles
         cJSON *rotation0 = cJSON_GetObjectItem(rot, "0");
         if (rotation0) f->rotations[0] = parse_rotation_array(rotation0, f->rows, f->cols);
 
         cJSON *rotation90 = cJSON_GetObjectItem(rot, "90");
         if (rotation90) f->rotations[90] = parse_rotation_array(rotation90, f->rows, f->cols);
+
+        cJSON *rotation180 = cJSON_GetObjectItem(rot, "180");
+        if (rotation180) f->rotations[180] = parse_rotation_array(rotation180, f->rows, f->cols);
+
+        cJSON *rotation270 = cJSON_GetObjectItem(rot, "270");
+        if (rotation270) f->rotations[270] = parse_rotation_array(rotation270, f->rows, f->cols);
     }
 
     cJSON_Delete(root);

@@ -24,7 +24,7 @@ void simulate_animation(const AnimationConfig *config) {
     }
 
     for (int t = 0; t <= max_time; t++) {
-        printf("\033[2J\033[H");  // Clear screen
+        printf("\033[2J\033[H");  // Limpiar pantalla
         char canvas[config->canvas.height][config->canvas.width];
         memset(canvas, ' ', sizeof(canvas));
 
@@ -34,9 +34,10 @@ void simulate_animation(const AnimationConfig *config) {
 
             Position pos = interpolate_position(f->pos0, f->pos1, t, f->t_start, f->t_end);
 
-            // Selecciona la rotación: 0, 90, 180, 270 (una cada 2 segundos)
-            int rotation_index = ((t - f->t_start) / 2) % 4;
-            char **shape = f->rotations[rotation_index];
+            // Seleccionar la rotación real (0, 90, 180, 270) según el tiempo
+            int angles[] = {0, 90, 180, 270};
+            int angle = angles[((t - f->t_start) / 2) % 4];
+            char **shape = f->rotations[angle];
             if (!shape) continue; // puede que no exista esa rotación
 
             for (int r = 0; r < f->rows; r++) {
@@ -59,7 +60,7 @@ void simulate_animation(const AnimationConfig *config) {
             putchar('\n');
         }
 
-        usleep(100000); // 100ms
+        usleep(100000); // 100 ms
     }
 
     printf("\n[FIN DE LA ANIMACIÓN]\n");
