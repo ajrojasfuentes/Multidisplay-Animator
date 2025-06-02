@@ -503,3 +503,131 @@ void init_timer(void)
     timer.it_interval        = timer.it_value;
     setitimer(ITIMER_REAL, &timer, NULL);
 }
+
+/* ====================== IMPLEMENTACIÓN DE MUTEX ====================== */
+
+/*
+ * my_mutex_init:
+ *   Deja locked = 0 y lista de hilos bloqueados vacía.
+ */
+int my_mutex_init(my_mutex_t *mutex) {
+    if (!mutex) return -1;
+    mutex->locked = 0;
+    mutex->waiting_head = NULL;
+    mutex->waiting_tail = NULL;
+    return 0;
+}
+
+/*
+ * my_mutex_destroy:
+ *   Solo es válido si no hay hilos bloqueados y el mutex está desbloqueado.
+ */
+int my_mutex_destroy(my_mutex_t *mutex) {
+    if (!mutex) return -1;
+    if (mutex->locked) return -1;
+    if (mutex->waiting_head) return -1;
+    /* No hay recursos dinámicos dentro del mutex */
+    return 0;
+}
+
+/*
+ * my_mutex_lock:
+ *   Si el mutex está libre (locked == 0), lo adquiere (locked = 1).
+ *   Si está ocupado, bloquea el hilo actual (lo encola) y hace yield al siguiente hilo listo.
+ */
+int my_mutex_lock(my_mutex_t *mutex) {
+    if (!mutex) return -1;
+
+    if (mutex->locked == 0) {
+        /* Si está libre, lo adquiere y retorna */
+        mutex->locked = 1;
+        return 0;
+    }
+
+    /* Si está ocupado, encolamos el hilo actual */
+    current_thread->next = NULL;
+    if (!mutex->waiting_head) {
+        mutex->waiting_head = current_thread;
+        mutex->waiting_tail = current_thread;
+    } else {
+        mutex->waiting_tail->next = current_thread;
+        mutex->waiting_tail = current_thread;
+    }
+
+    /* Remover current_thread de su lista de scheduler */
+    int me_sched = current_thread->sched_type;
+    if (me_sched == SCHED_RR) {
+        rr_remove(current_thread);
+    } else if (me_sched == SCHED_LOTTERY) {
+        lottery_remove(current_thread);
+    } else {
+        rt_remove(current_thread);
+    }
+
+    /* Eligir siguiente hilo listo: RR > Lottery > RT */
+    my_thread_t *next = NULL;
+    if (rr_head) {
+        next = rr_pick_next();
+    } else if (lottery_head) {
+        next = lottery_pick_next();
+    } else if (rt_head) {
+        next = rt_pick_next();
+    }
+
+    if (next) {
+        my_thread_t *prev = current_thread;
+        current_thread = next;
+        swapcontext(&prev->context, &next->context);
+    }
+    /* Cuando alguien haga unlock, reinyectará este hilo en la lista y continuará aquí */
+    return 0;
+}
+
+/*
+ * my_mutex_trylock:
+ *   Igual que lock, pero si está ocupado retorna -1 inmediatamente sin bloquear.
+ */
+int my_mutex_trylock(my_mutex_t *mutex) {
+    if (!mutex) return -1;
+    if (mutex->locked == 0) {
+        mutex->locked = 1;
+        return 0;
+    }
+    return -1;
+}
+
+/*
+ * my_mutex_unlock:
+ *   Si la cola de espera no está vacía, desencola el primer hilo y lo reinyecta
+ *   en su lista de scheduler, y el mutex sigue “locked = 1” para ese hilo.
+ *   Si no hay esperando, pone locked = 0.
+ */
+int my_mutex_unlock(my_mutex_t *mutex) {
+    if (!mutex) return -1;
+    if (!mutex->locked) return -1;  // no estaba bloqueado
+
+    if (mutex->waiting_head) {
+        /* Desencolar el primer hilo esperando */
+        my_thread_t *w = mutex->waiting_head;
+        mutex->waiting_head = w->next;
+        if (!mutex->waiting_head) {
+            mutex->waiting_tail = NULL;
+        }
+        w->next = NULL;
+
+        /* Reinyectar “w” en su lista de scheduler */
+        if (w->sched_type == SCHED_RR) {
+            rr_add(w);
+        } else if (w->sched_type == SCHED_LOTTERY) {
+            lottery_add(w);
+        } else {
+            rt_add(w);
+        }
+        /* Ahora “w” es el dueño del mutex */
+        /* No cambiamos locked a 0: permanece 1, asignado a “w” */
+    } else {
+        /* Ningún hilo esperando → dejamos el mutex libre */
+        mutex->locked = 0;
+    }
+    return 0;
+}

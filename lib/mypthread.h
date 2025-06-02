@@ -11,93 +11,89 @@
 #define SCHED_RT       2    // Real‐Time Scheduling
 
 typedef struct my_thread {
-    /* Contexto de ejecución */
     ucontext_t context;
+    int finished;
+    int detached;
+    struct my_thread *next;           // para waiting_list
+    struct my_thread *waiting_list;   // hilos que esperan este
 
-    /* Flags de ciclo de vida */
-    int finished;         // 1 si el hilo ha terminado
-    int detached;         // 1 si se marcó como detached
+    int sched_type;
+    int tickets;          // solo para Lottery
+    int rt_priority;      // solo para RT
 
-    /* Lista de hilos que esperan un join sobre este */
-    struct my_thread *next;           // para “waiting_list”
-    struct my_thread *waiting_list;   // punteros a los que hacen join(this)
-
-    /* --- Campos para scheduler --- */
-    int sched_type;       // SCHED_RR, SCHED_LOTTERY o SCHED_RT
-    int tickets;          // (Solo para Lottery) Número de boletos
-    int rt_priority;      // (Solo para Real‐Time) Prioridad estática
-
-    /* --- Enlaces para listas circulares por scheduler --- */
-    struct my_thread *rr_next, *rr_prev;          // para Round‐Robin
-    struct my_thread *lottery_next, *lottery_prev; // para Lottery
-    struct my_thread *rt_next, *rt_prev;           // para Real‐Time
+    struct my_thread *rr_next, *rr_prev;
+    struct my_thread *lottery_next, *lottery_prev;
+    struct my_thread *rt_next, *rt_prev;
 } my_thread_t;
 
 /* Variables globales (definidas en mypthread.c) */
 extern my_thread_t *current_thread;
 extern my_thread_t *main_thread;
 
-/* ==== Exponemos los “heads” de cada lista para que test.c pueda verlos ==== */
+/* Exponer los “heads” de cada lista para test */
 extern my_thread_t *rr_head;
 extern my_thread_t *lottery_head;
 extern my_thread_t *rt_head;
 
-/* =============== Interfaz Pública =============== */
-
-/*
- * my_thread_create:
- *   - thread: salida, puntero a la estructura nueva.
- *   - start_routine: función void(void) que ejecutará el hilo.
- *   - sched_type: SCHED_RR, SCHED_LOTTERY o SCHED_RT.
- *   - attr:
- *       * si SCHED_LOTTERY → número de tickets (>0).
- *       * si SCHED_RT     → rt_priority (>=0).
- *       * si SCHED_RR     → atributo ignorado (0).
- *
- * Retorna: 0 en éxito, -1 en error.
- */
+/* =============== Interfaz de hilos =============== */
 int my_thread_create(my_thread_t **thread,
                      void (*start_routine)(void),
                      int sched_type,
                      int attr);
-
-/*
- * my_thread_chsched:
- *   Cambia el scheduler de ‘target’ a new_sched, con parámetro new_attr.
- *   Retorna 0 en éxito, -1 en error.
- */
 int my_thread_chsched(my_thread_t *target,
                       int new_sched,
                       int new_attr);
-
-/*
- * Ceder voluntariamente (o preemptivo si llegó SIGALRM) el CPU al siguiente hilo
- * según la política del hilo actual.
- */
 void my_thread_yield(void);
-
-/*
- * Marcar el hilo actual como terminado:
- *   - Removerlo de su lista de scheduler.
- *   - Reinyectar (en su política) a quienes hicieron join sobre él.
- *   - Si estaba detached, liberar pila y estructura.
- *   - Despachar el siguiente hilo listo (RR>Lottery>RT). Si no quedan, exit(0).
- */
 void my_thread_end(void);
-
-/*
- * Esperar a que ‘target’ termine. Si ya terminó, retorna 0. Si no, bloquea el hilo
- * actual, hace swapcontext al siguiente listo. Cuando target termine, despertará
- * a este hilo y retornará 0. Retorna -1 si target == NULL, target == current_thread
- * o target estaba detached.
- */
 int my_thread_join(my_thread_t *target);
+int my_thread_detach(my_thread_t *target);
+
+/* =============== Interfaz de mutex en espacio de usuario =============== */
+/*
+ * Un mutex simple:
+ *   - Si está libre, quien llame a lock lo adquiere.
+ *   - Si está ocupado, el hilo actual se bloquea hasta que se llame unlock.
+ */
+typedef struct my_mutex {
+    int locked;                  // 0 = libre, 1 = ocupado
+    my_thread_t *waiting_head;   // lista FIFO de hilos bloqueados
+    my_thread_t *waiting_tail;
+} my_mutex_t;
 
 /*
- * Marcar ‘target’ como detached. Cuando target termine, liberará sus recursos.
- * Retorna 0 en éxito, -1 si target == NULL o ya estaba detached.
+ * Inicializar el mutex: lo deja desbloqueado y sin lista de espera.
+ * Retorna 0 en éxito, -1 si mutex == NULL.
  */
-int my_thread_detach(my_thread_t *target);
+int my_mutex_init(my_mutex_t *mutex);
+
+/*
+ * Destruir el mutex: asume que está desbloqueado y sin hilos en espera.
+ * Retorna 0 en éxito, -1 si hay hilos bloqueados o mutex == NULL.
+ */
+int my_mutex_destroy(my_mutex_t *mutex);
+
+/*
+ * Intentar adquirir el mutex.
+ * - Si estaba libre, lo marca como “locked” y retorna 0.
+ * - Si estaba ocupado, bloquea el hilo actual (lo pone en waiting_list)
+ *   y hace swapcontext a otro hilo listo.
+ * Retorna 0 en éxito, o -1 si mutex == NULL.
+ */
+int my_mutex_lock(my_mutex_t *mutex);
+
+/*
+ * Liberar el mutex: si hay hilos bloqueados, despierta al primero (FILO) y
+ * lo rebota a su lista de scheduler; si no, simplemente marca locked = 0.
+ * Retorna 0 en éxito, -1 si mutex == NULL o si no estaba locked.
+ */
+int my_mutex_unlock(my_mutex_t *mutex);
+
+/*
+ * Intentar “trylock” sin bloquear:
+ * - Si estaba libre, lo marca como locked y retorna 0.
+ * - Si estaba ocupado, retorna -1 sin bloquearse.
+ */
+int my_mutex_trylock(my_mutex_t *mutex);
 
 /* =============== Funciones Internas de RR =============== */
 void rr_init(void);
@@ -121,10 +117,6 @@ void rt_yield_current(void);
 void rt_remove(my_thread_t *t);
 
 /* =============== Temporizador =============== */
-/*
- * init_timer:
- *   Configura SIGALRM para invocar a my_thread_yield() cada 100 ms.
- */
 void init_timer(void);
 
 #endif // MYPTHREAD_H
